@@ -703,55 +703,15 @@ async def call_tool(name: str, arguments: Any) -> list[TextContent]:
     return [TextContent(type="text", text=f"Unknown tool: {name}")]
 
 
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
-from starlette.routing import Route, Mount
+from fastapi import FastAPI, Request as FastAPIRequest, UploadFile, File
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from starlette.routing import Mount
 from mcp.server.sse import SseServerTransport
 import uvicorn
+import logging
 
 # ... existing code ...
-
-async def handle_sse(request):
-    # Determine the absolute or relative path for the messages endpoint.
-    # Since we are mounting the messages handler at /sse/messages, we should tell the client to post there.
-    # SseServerTransport takes the endpoint URL that the client should POST to.
-    transport = SseServerTransport("/sse/messages")
-    async with app.run(transport.read_stream, transport.write_stream, app.create_initialization_options()) as streams:
-        await streams
-    return await transport.handle_sse(request)
-
-async def handle_messages(request):
-    # Since we are using Starlette, we need to bridge the request to the MCP transport.
-    # However, SseServerTransport.handle_post_message expects scope/receive/send (ASGI) or similar.
-    # The standard way with this SDK integration is tricky because `transport` is local to `handle_sse`.
-    # BUT, actually, for the standalone SseServerTransport, we should instantiate it once globally or per-session?
-    # No, MCP SDK design for Starlette/FastAPI usually implies we keep the transport alive.
-    # Let's fix this by using the ASGI app pattern if possible or a global transport map.
-    # FOR NOW: To keep it simple and working as per the previous working state (implied),
-    # we will rely on the fact that handle_sse creates a session.
-    # WAIT: Standard MCP python SDK usage for Starlette:
-    
-    # We need a shared transport handling mechanism.
-    # Let's revert to a simpler "Global SSE" pattern for this demo to work reliably.
-    
-    pass
-
-# Let's use the standard MCP SSE implementation pattern for Python
-from starlette.responses import Response, JSONResponse
-
-# SSE transport instance
-# SSE transport instance
-# We use the explicit path that matches our Mount structure to ensure the client
-# receives the correct URL for POST requests (e.g. https://domain.com/sse/messages)
-sse_transport = SseServerTransport("/sse/messages")
-
-async def handle_mcp_sse(scope, receive, send):
-    """
-    Combined ASGI handler for MCP SSE (Connection & Messages).
-    Mounted at /sse.
-    """
-import logging
 
 # Configure Logging to File
 logging.basicConfig(
@@ -763,16 +723,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("server")
 
-# ... (rest of imports)
-
-async def log_receive_wrapper(receive):
-    """Wrapper to log incoming ASGI messages (request body)."""
-    message = await receive()
-    if message["type"] == "http.request":
-        body = message.get("body", b"")
-        if body:
-            logger.debug(f"📥 POST Body: {body.decode('utf-8', errors='replace')}")
-    return message
+# SSE transport instance
+sse_transport = SseServerTransport("/sse/messages")
 
 async def handle_mcp_sse(scope, receive, send):
     """
@@ -786,22 +738,8 @@ async def handle_mcp_sse(scope, receive, send):
 
     if method == "POST":
          # Logic for message handling (POST /sse/messages)
-         # We accept matching "/messages" or just loose matching if it's the only POST
          logger.debug("Handling POST message")
          try:
-             # Wrap receive to capture body
-             async def wrapped_receive():
-                 message = await receive()
-                 if message["type"] == "http.request":
-                     body = message.get("body", b"")
-                     if body:
-                         logger.debug(f"📥 REQUEST BODY: {body.decode('utf-8', errors='replace')}")
-                 return message
-             
-             # Actually, simpler: just read body if I can put it back? No.
-             # Use the wrapper defined above? No, stateful closure needed for subsequent calls?
-             # Standard ASGI receive is one-time or stream.
-             # Let's simple-log inside a local wrapper.
              async def logging_receive():
                  msg = await receive()
                  if msg['type'] == 'http.request':
@@ -819,22 +757,35 @@ async def handle_mcp_sse(scope, receive, send):
          async with sse_transport.connect_sse(scope, receive, send) as streams:
              await app.run(streams[0], streams[1], app.create_initialization_options())
 
-async def handle_root(request):
-    return JSONResponse({"status": "healthy", "message": "MCP Server is running"})
+# Initialize FastAPI app
+fastapi_app = FastAPI(
+    title="DocxAI API",
+    description="API for document analysis and suggestions",
+    version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+    openapi_url="/api/openapi.json"
+)
 
-# REST API endpoints for standalone testing
-from starlette.requests import Request
-from starlette.responses import FileResponse
+# Configure CORS
+fastapi_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["*"],
+)
 
-async def handle_upload(request: Request):
+@fastapi_app.get("/", tags=["Health"])
+@fastapi_app.get("/api", tags=["Health"])
+@fastapi_app.get("/api/", tags=["Health"])
+async def handle_root():
+    return {"status": "healthy", "message": "MCP Server is running"}
+
+@fastapi_app.post("/api/upload", tags=["Documents"])
+async def handle_upload(file: UploadFile = File(...)):
     """REST endpoint to upload a document."""
-    form = await request.form()
-    file = form.get("file")
-    
-    if not file:
-        return JSONResponse({"error": "No file provided"}, status_code=400)
-    
-    # Read file content
     content = await file.read()
     filename = file.filename
     
@@ -855,13 +806,14 @@ async def handle_upload(request: Request):
         "metadata": metadata,
     }
     
-    return JSONResponse({
+    return {
         "doc_id": doc_id,
         "filename": filename,
         "metadata": metadata
-    })
+    }
 
-async def handle_analyze(request: Request):
+@fastapi_app.post("/api/analyze", tags=["Analysis"])
+async def handle_analyze(request: FastAPIRequest):
     """REST endpoint to analyze document and get suggestions."""
     data = await request.json()
     doc_id = data.get("doc_id")
@@ -879,13 +831,14 @@ async def handle_analyze(request: Request):
     # Store suggestions
     suggestions_store[doc_id] = suggestions
     
-    return JSONResponse({
+    return {
         "doc_id": doc_id,
         "suggestions": suggestions,
         "count": len(suggestions)
-    })
+    }
 
-async def handle_apply(request: Request):
+@fastapi_app.post("/api/apply", tags=["Modifications"])
+async def handle_apply(request: FastAPIRequest):
     """REST endpoint to apply selected suggestions."""
     data = await request.json()
     doc_id = data.get("doc_id")
@@ -908,26 +861,23 @@ async def handle_apply(request: Request):
     doc_path = documents[doc_id]["path"]
     modified_path = apply_changes_to_document(doc_path, selected)
     
-    # Create a user-friendly filename based on original filename
+    # Create a user-friendly filename
     original_filename = documents[doc_id]["filename"]
-    # Remove .docx extension if present, add _modified, then add .docx
     base_name = original_filename.rsplit('.', 1)[0] if '.' in original_filename else original_filename
     download_filename = f"{base_name}_modified.docx"
     
-    # Store modified document path and download filename
     documents[doc_id]["modified_path"] = modified_path
     documents[doc_id]["download_filename"] = download_filename
     
-    return JSONResponse({
+    return {
         "success": True,
         "applied_count": len(selected),
         "download_url": f"/api/download/{doc_id}"
-    })
+    }
 
-async def handle_download(request: Request):
+@fastapi_app.get("/api/download/{doc_id}", tags=["Documents"])
+async def handle_download(doc_id: str):
     """REST endpoint to download modified document."""
-    doc_id = request.path_params.get("doc_id")
-    
     if doc_id not in documents:
         return JSONResponse({"error": "Document not found"}, status_code=404)
     
@@ -935,7 +885,6 @@ async def handle_download(request: Request):
     if not modified_path or not Path(modified_path).exists():
         return JSONResponse({"error": "Modified document not found"}, status_code=404)
     
-    # Use the stored download filename with proper extension
     download_filename = documents[doc_id].get("download_filename", "modified_document.docx")
     
     return FileResponse(
@@ -944,30 +893,9 @@ async def handle_download(request: Request):
         media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     )
 
-# Define routes
-routes = [
-    Route("/", handle_root),
-    Route("/api/upload", handle_upload, methods=["POST"]),
-    Route("/api/analyze", handle_analyze, methods=["POST"]),
-    Route("/api/apply", handle_apply, methods=["POST"]),
-    Route("/api/download/{doc_id}", handle_download, methods=["GET"]),
-    Mount("/sse", app=handle_mcp_sse),
-]
-
-# Configure CORS
-middleware = [
-    Middleware(
-        CORSMiddleware,
-        allow_origins=["*"],  # Allow all origins in development
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["*"],
-    )
-]
-
-starlette_app = Starlette(debug=True, routes=routes, middleware=middleware)
+# Mount MCP SSE handler
+fastapi_app.mount("/sse", handle_mcp_sse)
 
 if __name__ == "__main__":
-    uvicorn.run(starlette_app, host="0.0.0.0", port=8787)
+    uvicorn.run(fastapi_app, host="0.0.0.0", port=8787)
 

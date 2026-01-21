@@ -102,18 +102,38 @@ We implemented a robust **Dynamic Host Injection** architecture to solve the "lo
 
 ---
 
-## 🔌 API Reference (Standalone Mode)
+## ☁️ Deployment: Azure Multi-Container Strategy
 
-You can also use the backend as a standard REST API.
+For production-grade environments, the project supports a **Multi-Container Azure App Service** deployment. This methodology ensures scalability and a unified entry point.
 
-**Base URL:** `http://localhost:8787`
+### Deployment Methodology:
+1.  **Containerization**: Three distinct services are orchestrated:
+    -   **MCP Backend**: FastAPI server handling logic and MCP protocol.
+    -   **React Frontend**: Static assets served via a dedicated web server.
+    -   **Nginx Gateway**: A unified reverse-proxy that routes traffic to the correct internal containers and manages SSE (Server-Sent Events) headers.
+2.  **Architecture**: Deployment is performed via Azure Container Registry (ACR) and managed through Docker Compose configurations on Azure App Service.
+3.  **Cross-Platform Builds**: Images are built using `linux/amd64` to ensure compatibility with Azure infrastructure.
+4.  **Security**: Environment variables (like `OPENAI_API_KEY`) and registry credentials are managed securely through Azure's Application Settings.
+
+---
+
+## 🔌 API Reference & Documentation
+
+The backend is built with **FastAPI**, providing automatic, interactive documentation.
+
+### Interactive Swagger UI
+When running the application (locally or on Azure), you can access the interactive Swagger documentation at:
+-   **Endpoint**: `/api/docs`
+-   **Features**: Test endpoints, view request/response schemas, and explore the API structure.
+
+### Standard REST Endpoints
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | `POST` | `/api/upload` | Upload `.docx` file |
 | `POST` | `/api/analyze` | Get AI suggestions |
 | `POST` | `/api/apply` | Apply selected edits |
-| `GET` | `/api/download/{file}` | Download result |
+| `GET` | `/api/download/{id}` | Download result |
 
 ---
 
@@ -122,13 +142,15 @@ You can also use the backend as a standard REST API.
 ```
 .
 ├── backend/
-│   ├── server.py           # MCP Server + Injection Logic
+│   ├── server.py           # FastAPI MCP Server + Injection Logic
 │   └── requirements.txt    # Python dependencies
 ├── frontend/
 │   ├── src/App.jsx         # React Widget Logic
 │   └── dist/index.html     # Compiled Widget
 ├── inline_assets.py        # Build script for widget
-└── README.md
+├── deploy-azure.sh         # Automated Azure deployment script
+├── docker-compose-azure.yml # Azure orchestration config
+└── nginx.conf              # Gateway proxy configuration
 ```
 
 ## License

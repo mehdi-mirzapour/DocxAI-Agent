@@ -22,6 +22,17 @@ This guide deploys your **3-Docker Architecture** (MCP, Frontend, Nginx) to Azur
 - **Resource Group:** `docxai-rg`
 - **ACR Name:** `docxaicr`
 - **App Service:** `docxai-app`
+- **Automation:** `deploy-azure.sh` (One-click deployment script)
+
+---
+
+## 1. Automated Deployment (Fastest)
+If you have the Azure CLI installed and are logged in, simply run:
+
+```bash
+chmod +x deploy-azure.sh
+./deploy-azure.sh
+```
 
 ---
 
